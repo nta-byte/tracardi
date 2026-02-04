@@ -349,3 +349,15 @@ server = ServerConfig(os.environ)
 tracardi = TracardiConfig(os.environ)
 mysql = MysqlConfig(os.environ)
 starrocks = StarRocksConfig(os.environ)
+
+
+class KafkaConfig:
+    def __init__(self, env):
+        self.bootstrap_servers = env.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+        self.topic = env.get('KAFKA_TOPIC', 'tracardi.events')
+        self.group_id = env.get('KAFKA_GROUP_ID', 'tracardi.worker')
+        self.auto_offset_reset = env.get('KAFKA_AUTO_OFFSET_RESET', 'earliest')
+        self.run_consumer = get_env_as_bool('RUN_KAFKA_CONSUMER', 'no')
+
+
+kafka_config = KafkaConfig(os.environ)

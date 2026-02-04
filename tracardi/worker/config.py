@@ -16,6 +16,15 @@ class RedisConfig:
         return self.redis_host
 
 
+class KafkaConfig:
+    def __init__(self, env):
+        self.bootstrap_servers = env.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+        self.topic = env.get('KAFKA_TOPIC', 'tracardi.events')
+        self.group_id = env.get('KAFKA_GROUP_ID', 'tracardi.worker')
+        self.auto_offset_reset = env.get('KAFKA_AUTO_OFFSET_RESET', 'earliest')
+        self.run_consumer = env.get('RUN_KAFKA_CONSUMER', 'no')
+
+
 class ElasticSearchConfig:
 
     def __init__(self, env):
@@ -76,3 +85,4 @@ class ElasticSearchConfig:
 
 redis_config = RedisConfig(os.environ)
 elasticsearch_config = ElasticSearchConfig(os.environ)
+kafka_config = KafkaConfig(os.environ)

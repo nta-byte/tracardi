@@ -11,11 +11,11 @@ RUN /opt/venv/bin/python3 -m pip install --upgrade pip
 RUN mkdir -p app
 WORKDIR /app
 
-COPY tracardi/worker/requirements.txt .
+COPY tracardi/tracardi/worker/requirements.txt .
 RUN pip install wheel
 RUN pip --default-timeout=240 install -r requirements.txt
 
-COPY tracardi/worker ./tracardi/worker
+COPY tracardi/tracardi/worker ./tracardi/worker
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1

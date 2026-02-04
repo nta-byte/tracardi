@@ -2,7 +2,8 @@ import logging
 
 import asyncio
 
-from huey import RedisHuey
+from huey import RedisHuey, signal
+import threading
 
 from tracardi.exceptions.log_handler import get_installation_logger
 from tracardi.service.storage.redis.driver.redis_connection_pool import get_redis_connection_pool
@@ -10,9 +11,14 @@ from tracardi.service.storage.redis.driver.redis_connection_pool import get_redi
 import tracardi.worker.service.worker.migration_workers as migration_workers
 
 from tracardi.context import Context, ServerContext
-from tracardi.config import redis_config
+from tracardi.config import redis_config, kafka_config
 from tracardi.worker.service.async_job import run_async_task
 from tracardi.worker.service.worker.elastic_worker import ElasticImporter, ElasticCredentials
+from tracardi.service.track_event import track_event
+from tracardi.domain.payload.tracker_payload import TrackerPayload
+from aiokafka import AIOKafkaConsumer
+import json
+import asyncio
 from tracardi.worker.service.worker.mysql_worker import MysqlConnectionConfig, MySQLImporter
 from tracardi.worker.service.worker.mysql_query_worker import MysqlConnectionConfig as MysqlQueryConnConfig, MySQLQueryImporter
 from tracardi.worker.service.import_dispatcher import ImportDispatcher
@@ -173,4 +179,51 @@ def run_migration_job(schemas, elastic_host, context: dict):
     context = Context.from_dict(context)
     _run_migration_job(schemas, elastic_host, context)
     logger.info("Migration finished")
+
+
+async def run_kafka_consumer():
+    if not kafka_config.run_consumer:
+        return
+
+    consumer = AIOKafkaConsumer(
+        kafka_config.topic,
+        bootstrap_servers=kafka_config.bootstrap_servers,
+        group_id=kafka_config.group_id,
+        auto_offset_reset=kafka_config.auto_offset_reset,
+        value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+    )
+
+    await consumer.start()
+    try:
+        async for msg in consumer:
+            logger.info(f"Consumed message: {msg.value}")
+            try:
+                payload = TrackerPayload(**msg.value)
+                await track_event(
+                    payload,
+                    ip=payload.get_ip(),
+                    allowed_bridges=[],
+                    run_async=True
+                )
+            except Exception as e:
+                logger.error(f"Error processing Kafka message: {e}")
+    except Exception as e:
+        logger.error(f"Kafka consumer error: {e}")
+    finally:
+        await consumer.stop()
+
+
+def _start_kafka_consumer_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_kafka_consumer())
+    loop.close()
+
+
+@queue.signal(signal.SIGNAL_STARTUP)
+def start_kafka_consumer(process, pid):
+    logger.info(f"Starting Kafka consumer in thread for process {pid}")
+    t = threading.Thread(target=_start_kafka_consumer_thread)
+    t.daemon = True
+    t.start()
 
