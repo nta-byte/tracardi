@@ -1,30 +1,24 @@
+import asyncio
+import json
 import logging
 
-import asyncio
-
-from huey import RedisHuey, signal
-import threading
-
+import tracardi.worker.service.worker.migration_workers as migration_workers
+from aiokafka import AIOKafkaConsumer
+from huey import RedisHuey
+from tracardi.config import redis_config, kafka_config
+from tracardi.context import Context, ServerContext
+from tracardi.domain.payload.tracker_payload import TrackerPayload
 from tracardi.exceptions.log_handler import get_installation_logger
 from tracardi.service.storage.redis.driver.redis_connection_pool import get_redis_connection_pool
-
-import tracardi.worker.service.worker.migration_workers as migration_workers
-
-from tracardi.context import Context, ServerContext
-from tracardi.config import redis_config, kafka_config
-from tracardi.worker.service.async_job import run_async_task
-from tracardi.worker.service.worker.elastic_worker import ElasticImporter, ElasticCredentials
 from tracardi.service.track_event import track_event
-from tracardi.domain.payload.tracker_payload import TrackerPayload
-from aiokafka import AIOKafkaConsumer
-import json
-import asyncio
-from tracardi.worker.service.worker.mysql_worker import MysqlConnectionConfig, MySQLImporter
-from tracardi.worker.service.worker.mysql_query_worker import MysqlConnectionConfig as MysqlQueryConnConfig, MySQLQueryImporter
-from tracardi.worker.service.import_dispatcher import ImportDispatcher
 from tracardi.worker.domain.import_config import ImportConfig
 from tracardi.worker.domain.migration_schema import MigrationSchema
 from tracardi.worker.misc.task_progress import task_create, task_progress, task_finish
+from tracardi.worker.service.async_job import run_async_task
+from tracardi.worker.service.import_dispatcher import ImportDispatcher
+from tracardi.worker.service.worker.elastic_worker import ElasticImporter, ElasticCredentials
+from tracardi.worker.service.worker.mysql_query_worker import MysqlConnectionConfig as MysqlQueryConnConfig, MySQLQueryImporter
+from tracardi.worker.service.worker.mysql_worker import MysqlConnectionConfig, MySQLImporter
 
 queue = RedisHuey('upgrade',
                   connection_pool=get_redis_connection_pool(redis_config),
@@ -33,8 +27,9 @@ queue = RedisHuey('upgrade',
 
 logger = get_installation_logger(__name__, level=logging.INFO)
 
+
 @run_async_task
-async def import_mysql_table_data(task_name:str, import_config: dict, credentials, context: Context):
+async def import_mysql_table_data(task_name: str, import_config: dict, credentials, context: Context):
     with ServerContext(context):
         import_config = ImportConfig(**import_config)
 
@@ -57,7 +52,7 @@ async def import_mysql_table_data(task_name:str, import_config: dict, credential
 
 
 @run_async_task
-async def import_elastic_data(task_name:str, import_config, credentials, context: Context):
+async def import_elastic_data(task_name: str, import_config, credentials, context: Context):
     with ServerContext(context):
         import_config = ImportConfig(**import_config)
 
@@ -78,8 +73,9 @@ async def import_elastic_data(task_name:str, import_config, credentials, context
 
         await task_finish(task_id)
 
+
 @run_async_task
-async def import_mysql_data_with_query(task_name:str, import_config, credentials, context: Context):
+async def import_mysql_data_with_query(task_name: str, import_config, credentials, context: Context):
     import_config = ImportConfig(**import_config)
 
     task_id = await task_create(
@@ -101,6 +97,7 @@ async def import_mysql_data_with_query(task_name:str, import_config, credentials
 
     await task_finish(task_id)
 
+
 async def _run_migration_worker(worker_func, schema, elastic_host, context: Context):
     worker_function = getattr(migration_workers, worker_func, None)
 
@@ -116,6 +113,7 @@ async def _run_migration_worker(worker_func, schema, elastic_host, context: Cont
     #   * context
 
     await worker_function(MigrationSchema(**schema), elastic_host, context)
+
 
 async def migrate_data(schemas, elastic_host, context: Context):
     logger.info(f"Migration starts for elastic: {elastic_host}")
@@ -151,6 +149,7 @@ async def migrate_data(schemas, elastic_host, context: Context):
 
     await task_finish(task_id)
 
+
 @run_async_task
 async def _run_migration_job(schemas, elastic_host, context: Context):
     with ServerContext(context):
@@ -171,9 +170,12 @@ def run_elastic_import_job(task_name: str, import_config, credentials, context: 
 def run_mysql_query_import_job(import_config, credentials):
     import_mysql_data_with_query(import_config, credentials)
 
+
 """
 This is start job
 """
+
+
 @queue.task(retries=1)
 def run_migration_job(schemas, elastic_host, context: dict):
     context = Context.from_dict(context)
@@ -190,25 +192,23 @@ async def run_kafka_consumer():
         bootstrap_servers=kafka_config.bootstrap_servers,
         group_id=kafka_config.group_id,
         auto_offset_reset=kafka_config.auto_offset_reset,
-        value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        enable_auto_commit=True,
+        value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )
 
     await consumer.start()
+    logger.info("Kafka consumer started")
+
     try:
         async for msg in consumer:
-            logger.info(f"Consumed message: {msg.value}")
             try:
-                payload = TrackerPayload(**msg.value)
-                await track_event(
-                    payload,
-                    ip=payload.get_ip(),
-                    allowed_bridges=[],
-                    run_async=True
-                )
+                process_kafka_event(msg.value)  # enqueue Huey task
             except Exception as e:
-                logger.error(f"Error processing Kafka message: {e}")
+                logger.error(f"Failed to enqueue Kafka event: {e}")
+
     except Exception as e:
         logger.error(f"Kafka consumer error: {e}")
+
     finally:
         await consumer.stop()
 
@@ -220,10 +220,20 @@ def _start_kafka_consumer_thread():
     loop.close()
 
 
-@queue.signal(signal.SIGNAL_STARTUP)
-def start_kafka_consumer(process, pid):
-    logger.info(f"Starting Kafka consumer in thread for process {pid}")
-    t = threading.Thread(target=_start_kafka_consumer_thread)
-    t.daemon = True
-    t.start()
+@queue.task(retries=3, retry_delay=5)
+def process_kafka_event(payload: dict):
+    try:
+        tracker_payload = TrackerPayload(**payload)
 
+        asyncio.run(
+            track_event(
+                tracker_payload,
+                ip=tracker_payload.get_ip(),
+                allowed_bridges=[],
+                run_async=False
+            )
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to process Kafka event: {e}")
+        raise
