@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import threading
 
 import tracardi.worker.service.worker.migration_workers as migration_workers
 from aiokafka import AIOKafkaConsumer
@@ -220,6 +221,15 @@ def _start_kafka_consumer_thread():
     loop.close()
 
 
+def start_kafka_consumer():
+    logger.info("Starting Kafka consumer thread...")
+    t = threading.Thread(
+        target=_start_kafka_consumer_thread,
+        daemon=True
+    )
+    t.start()
+
+
 @queue.task(retries=3, retry_delay=5)
 def process_kafka_event(payload: dict):
     try:
@@ -237,3 +247,6 @@ def process_kafka_event(payload: dict):
     except Exception as e:
         logger.error(f"Failed to process Kafka event: {e}")
         raise
+
+if kafka_config.run_consumer:
+    start_kafka_consumer()

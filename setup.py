@@ -35,7 +35,7 @@ setup(
         'astral==2.2',
         'jsonschema==4.3.3',  # old version 4.16.0
         'python-dateutil==2.8.2',
-        'mailchimp-transactional',
+        # 'mailchimp-transactional',
         'email-validator',
         'lxml==4.9.1',
         'beautifulsoup4',
